@@ -1,6 +1,6 @@
 # Secret Scanner
 
-A lightweight Python tool that scans directories for exposed secrets, API keys, passwords, and private keys — using both filename and content detection, with severity scoring.
+A lightweight Python tool that scans directories for exposed secrets, API keys, passwords, and private keys. Using both filename and content detection, with severity scoring.
 
 Built with no external dependencies (Python standard library only), so it runs on any machine with Python installed.
 
