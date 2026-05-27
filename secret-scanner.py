@@ -1,5 +1,5 @@
 """
-secret-scanner-v2.py — walks a folder and flags potential secrets.
+secret-scanner.py — walks a folder and flags potential secrets.
 
 Two detection modes:
   - FILENAME : the file shouldn't exist here at all (.env, id_rsa, .pem)
@@ -8,9 +8,9 @@ Two detection modes:
 Exits 0 if clean, 1 if any findings are found (safe for CI pipelines).
 
 Usage:
-  python secret-scanner-v2.py <folder>
-  python secret-scanner-v2.py <folder> --json
-  python secret-scanner-v2.py --help
+  python secret-scanner.py <folder>
+  python secret-scanner.py <folder> --json
+  python secret-scanner.py --help
 """
 import argparse
 import json
