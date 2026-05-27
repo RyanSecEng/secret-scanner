@@ -88,4 +88,4 @@ The tool walks the target directory recursively with `os.walk()`. For each file 
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
