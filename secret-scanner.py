@@ -1,12 +1,12 @@
 """
-secret-scanner.py — walks a folder and flags potential secrets.
+secret-scanner.py: walks a folder and flags potential secrets.
 
 Two detection modes:
   - FILENAME : the file shouldn't exist here at all (.env, id_rsa, .pem)
   - CONTENT  : a secret is hiding inside a file (passwords, API keys)
 
 Exits 0 if clean, 1 if any findings are found OR any files could not be read
-(safe for CI pipelines — unreadable files never masquerade as "clean").
+(safe for CI pipelines: unreadable files never masquerade as "clean").
 
 Usage:
   python secret-scanner.py <folder>
@@ -20,7 +20,7 @@ import re
 import sys
 from collections import Counter
 
-MAX_FILE_BYTES = 5 * 1024 * 1024  # skip files larger than 5 MB
+MAX_FILE_BYTES = 5 * 1024 * 1024
 
 BANNER = r"""
    ____                 _     ____
@@ -32,15 +32,15 @@ BANNER = r"""
   secret-scanner v2 - finds exposed secrets before attackers do
 """
 
-# ANSI styling — enabled only when writing to a real terminal (see _init_color).
+# ANSI styling, enabled only when writing to a real terminal (see _init_color).
 _RESET = '\033[0m'
 _BOLD = '\033[1m'
 _CYAN = '\033[36m'
 _GREEN = '\033[32m'
 _SEVERITY_COLORS = {
-    'HIGH':   '\033[1;31m',  # bold red
-    'MEDIUM': '\033[33m',    # yellow
-    'LOW':    '\033[34m',    # blue
+    'HIGH':   '\033[1;31m',
+    'MEDIUM': '\033[33m',
+    'LOW':    '\033[34m',
 }
 
 _use_color = False  # decided at runtime in _init_color()
@@ -52,7 +52,7 @@ SKIP_DIRS = frozenset({
     '.tox', 'dist', 'build', '.mypy_cache', '.pytest_cache',
 })
 
-# Sensitive file *extensions* — matched against dot-separated name segments so
+# Sensitive file *extensions*, matched against dot-separated name segments so
 # `secret.pem` / `.env.local` hit but `readme.environment` / `notes.keynote` don't.
 # (segment, severity, why)
 SENSITIVE_EXT_SEGMENTS = [
@@ -61,7 +61,7 @@ SENSITIVE_EXT_SEGMENTS = [
     ('key', 'HIGH',   'private key file'),
 ]
 
-# Sensitive name *substrings* — these are meaningful anywhere in the filename.
+# Sensitive name *substrings*: meaningful anywhere in the filename.
 # (substring, severity, why)
 SENSITIVE_NAME_SUBSTRINGS = [
     ('id_rsa',      'HIGH',   'private SSH key'),
@@ -70,7 +70,7 @@ SENSITIVE_NAME_SUBSTRINGS = [
 ]
 
 # Negative lookahead: reject obvious placeholder/dummy values at the value position.
-# NOTE: 'test' is intentionally NOT listed — real secrets often start with "test".
+# NOTE: 'test' is intentionally NOT listed; real secrets often start with "test".
 _DUMMY = (
     r'(?!(?:none|null|false|true|changeme|example|placeholder'
     r'|your[_\-]?(?:key|secret|token)|insert|todo|xxxx|dummy|sample))'
@@ -119,9 +119,9 @@ def _init_color(stream):
 
 
 # Control characters that can drive the terminal (C0 incl. ESC, DEL, and the C1
-# range — 0x9b is CSI). Scanned filenames and file contents are untrusted, so any
+# range; 0x9b is CSI). Scanned filenames and file contents are untrusted, so any
 # of these must be neutralised before they reach the terminal or they could
-# rewrite/spoof our output (hide findings, fake "Clean", retitle the window…).
+# rewrite/spoof our output (hide findings, fake "Clean", retitle the window...).
 _CONTROL_RE = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 
 
@@ -172,7 +172,7 @@ def read_text(path, errors):
     failures (permissions, I/O) are appended to `errors` so the caller can fail
     loud; deliberate skips (too large, binary) are not treated as errors.
     """
-    # `path` is attacker-influenced (filenames) — sanitize before it hits stderr.
+    # `path` is attacker-influenced (filenames), so sanitize before it hits stderr.
     safe_path = _sanitize(path)
     try:
         size = os.path.getsize(path)
@@ -197,7 +197,7 @@ def read_text(path, errors):
 
     text = raw.decode(_detect_encoding(raw), errors='ignore')
 
-    # A NUL surviving decode means this isn't really text — skip binary content.
+    # A NUL surviving decode means this isn't really text, so skip binary content.
     if '\x00' in text:
         return None
 
@@ -231,12 +231,10 @@ def scan(folder):
         for f in files:
             path = os.path.join(root, f)
 
-            # --- FILENAME mode ---
             name_finding = _filename_finding(f, path)
             if name_finding is not None:
                 findings.append(name_finding)
 
-            # --- CONTENT mode ---
             content = read_text(path, errors)
             if content is None:
                 continue
@@ -264,15 +262,15 @@ def _severity_breakdown(results):
 
 def print_human(results, errors):
     if not results:
-        print(color("[+] Clean — no secrets found.", _GREEN))
+        print(color("[+] Clean - no secrets found.", _GREEN))
     else:
         sorted_results = sorted(results, key=lambda r: SEVERITY_ORDER.get(r['severity'], 9))
         print(color(f"[!] {len(results)} findings", _BOLD) + f"  ({_severity_breakdown(results)}):\n")
         for r in sorted_results:
             loc = f"{r['path']}:{r['line']}" if r['line'] else r['path']
             tag = color(f"[{r['severity']}]", _SEVERITY_COLORS.get(r['severity'], ''))
-            # path and detail (masked secret) are untrusted — sanitize before printing.
-            print(f"  {tag} [{r['mode']}] {_sanitize(loc)} — {_sanitize(r['detail'])}")
+            # path and detail (masked secret) are untrusted, so sanitize before printing.
+            print(f"  {tag} [{r['mode']}] {_sanitize(loc)} - {_sanitize(r['detail'])}")
 
     if errors:
         print(f"\n[!] {len(errors)} file(s) could not be read and were NOT scanned "
