@@ -1,0 +1,13 @@
+﻿# Never commit secrets
+.env
+*.pem
+*.key
+id_rsa
+credentials*
+secrets*
+
+# Python noise
+__pycache__/
+*.pyc
+venv/
+.venv/
