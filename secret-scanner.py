@@ -14,15 +14,30 @@ Usage:
   python secret-scanner.py --help
 """
 import argparse
+import errno
 import json
 import os
 import re
+import stat
 import sys
 from collections import Counter
 
 MAX_FILE_BYTES = 5 * 1024 * 1024
 
+# Lines longer than this are skipped for content matching. Real config secrets
+# live on short lines; a single enormous line is almost always a minified bundle
+# or a crafted no-newline blob, where regex work has poor signal and (as the
+# pattern set grows) is where backtracking risk would creep in.
+MAX_LINE_CHARS = 100 * 1024
+
 BANNER = r"""
+                            .-------.
+                           /         \
+                          |    ( )    |
+                           \         /
+                            \       /
+                             \     /
+                              '---'
    ____                 _     ____
   / ___|  ___  ___ _ __| |_  / ___|  ___ __ _ _ __  _ __   ___ _ __
   \___ \ / _ \/ __| '__| __| \___ \ / __/ _` | '_ \| '_ \ / _ \ '__|
@@ -118,16 +133,29 @@ def _init_color(stream):
     _use_color = _enable_windows_vt() if sys.platform == 'win32' else True
 
 
-# Control characters that can drive the terminal (C0 incl. ESC, DEL, and the C1
-# range; 0x9b is CSI). Scanned filenames and file contents are untrusted, so any
-# of these must be neutralised before they reach the terminal or they could
-# rewrite/spoof our output (hide findings, fake "Clean", retitle the window...).
-_CONTROL_RE = re.compile(r'[\x00-\x1f\x7f-\x9f]')
+# Filenames and file contents are untrusted, so we strip anything that could
+# drive the terminal before printing it: C0/C1/DEL controls (ANSI escapes,
+# window-title tricks) and the bidi/zero-width characters behind "Trojan Source"
+# attacks. Defined as code points so this file itself stays plain ASCII.
+_UNSAFE_RANGES = (
+    (0x00, 0x1f), (0x7f, 0x9f),   # C0 controls, DEL, C1 controls
+    (0x200b, 0x200f),             # zero-width space/joiners, LRM, RLM
+    (0x202a, 0x202e),             # bidi embeddings / overrides
+    (0x2066, 0x2069),             # bidi isolates
+    (0x061c, 0x061c),             # Arabic letter mark
+    (0xfeff, 0xfeff),             # zero-width no-break space (BOM)
+)
+_UNSAFE_RE = re.compile(
+    '[' + ''.join(f'{chr(lo)}-{chr(hi)}' for lo, hi in _UNSAFE_RANGES) + ']'
+)
 
 
 def _sanitize(text):
-    """Escape terminal control characters in untrusted text before display."""
-    return _CONTROL_RE.sub(lambda m: f'\\x{ord(m.group()):02x}', str(text))
+    """Escape terminal-control and text-spoofing characters in untrusted text."""
+    def _escape(match):
+        cp = ord(match.group())
+        return f'\\x{cp:02x}' if cp <= 0xff else f'\\u{cp:04x}'
+    return _UNSAFE_RE.sub(_escape, str(text))
 
 
 def color(text, code):
@@ -165,6 +193,16 @@ def _detect_encoding(raw):
     return 'utf-8'
 
 
+# O_NOFOLLOW makes open() refuse a final-component symlink (raising ELOOP) rather
+# than silently following it. Not defined on Windows, where it falls back to 0 and
+# symlink creation already needs privilege.
+_O_NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
+
+
+def _nofollow_opener(path, flags):
+    return os.open(path, flags | _O_NOFOLLOW)
+
+
 def read_text(path, errors):
     """Read a file as text with encoding detection.
 
@@ -175,12 +213,19 @@ def read_text(path, errors):
     # `path` is attacker-influenced (filenames), so sanitize before it hits stderr.
     safe_path = _sanitize(path)
     try:
-        size = os.path.getsize(path)
+        st = os.lstat(path)  # lstat, so we inspect the link itself, not its target
     except OSError as exc:
         print(f"[SKIP] {safe_path}: {_sanitize(exc)}", file=sys.stderr)
         errors.append((path, str(exc)))
         return None
 
+    # Only read plain files. Symlinks could lead outside the scan target, and
+    # special files (FIFOs, devices, sockets) can hang read() forever - skip both.
+    # Deliberate skips like these aren't errors, so we don't record them.
+    if not stat.S_ISREG(st.st_mode):
+        return None
+
+    size = st.st_size
     if size > MAX_FILE_BYTES:
         mb = size // (1024 * 1024)
         print(f"[SKIP] {safe_path}: file too large ({mb} MB > {MAX_FILE_BYTES // (1024 * 1024)} MB limit)",
@@ -188,9 +233,16 @@ def read_text(path, errors):
         return None
 
     try:
-        with open(path, 'rb') as fh:
+        # Open without following a symlink, closing the gap between the lstat
+        # above and here: if the path is swapped for a symlink in between, the
+        # open fails instead of leading us out of the scan tree.
+        with open(path, 'rb', opener=_nofollow_opener) as fh:
             raw = fh.read()
     except OSError as exc:
+        # ELOOP means O_NOFOLLOW caught a symlink that appeared after the check;
+        # that's a deliberate skip, not a read failure to report.
+        if getattr(exc, 'errno', None) == errno.ELOOP:
+            return None
         print(f"[SKIP] {safe_path}: {_sanitize(exc)}", file=sys.stderr)
         errors.append((path, str(exc)))
         return None
@@ -239,16 +291,25 @@ def scan(folder):
             if content is None:
                 continue
 
-            for pattern, label, severity in SECRET_PATTERNS:
-                for match in re.finditer(pattern, content):
-                    line_num = content.count('\n', 0, match.start()) + 1
-                    findings.append({
-                        'severity': severity,
-                        'mode':     'CONTENT',
-                        'path':     path,
-                        'line':     line_num,
-                        'detail':   f"{label}: {mask_secret(match.group(0))}",
-                    })
+            skipped_lines = 0
+            for line_num, line in enumerate(content.split('\n'), 1):
+                if len(line) > MAX_LINE_CHARS:
+                    skipped_lines += 1
+                    continue
+                for pattern, label, severity in SECRET_PATTERNS:
+                    for match in re.finditer(pattern, line):
+                        findings.append({
+                            'severity': severity,
+                            'mode':     'CONTENT',
+                            'path':     path,
+                            'line':     line_num,
+                            'detail':   f"{label}: {mask_secret(match.group(0))}",
+                        })
+
+            # Be loud about skipped lines so a long line never masquerades as clean.
+            if skipped_lines:
+                print(f"[SKIP] {_sanitize(path)}: {skipped_lines} line(s) over "
+                      f"{MAX_LINE_CHARS // 1024} KB not content-scanned", file=sys.stderr)
 
     return findings, errors
 
@@ -301,8 +362,7 @@ def main():
     args = parser.parse_args()
 
     if not os.path.isdir(args.folder):
-        print(f"[ERROR] Not a folder: {args.folder}", file=sys.stderr)
-        print("Fail loud, never fail silent.", file=sys.stderr)
+        print(f"[ERROR] Not a folder: {_sanitize(args.folder)}", file=sys.stderr)
         sys.exit(1)
 
     if not args.json:

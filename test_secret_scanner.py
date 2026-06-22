@@ -85,6 +85,36 @@ class DetectionTests(unittest.TestCase):
         findings, _ = scanner.scan(self.dir)
         self.assertEqual(findings, [])
 
+    def test_long_line_is_not_content_scanned(self):
+        # One enormous line is skipped, so a secret buried in it isn't reported.
+        long_line = "x" * (scanner.MAX_LINE_CHARS + 1) + " password = SuperSecret123"
+        write(self.dir, "bundle.min.js", long_line + "\n")
+        findings, _ = scanner.scan(self.dir)
+        self.assertEqual([f for f in findings if f["mode"] == "CONTENT"], [])
+
+    def test_normal_lines_scanned_even_when_a_long_line_is_present(self):
+        # A short secret on its own line is still found despite a long line nearby.
+        content = "password = SuperSecret123\n" + "y" * (scanner.MAX_LINE_CHARS + 1) + "\n"
+        write(self.dir, "mixed.txt", content)
+        findings, _ = scanner.scan(self.dir)
+        self.assertTrue(any(f["mode"] == "CONTENT" for f in findings))
+
+    def test_symlink_content_is_not_read(self):
+        # A symlink could point outside the scan target; we must not read through
+        # it. The real file is still scanned; the link must add no CONTENT finding.
+        real = write(self.dir, "real.txt", "password = SuperSecret123\n")
+        link = os.path.join(self.dir, "link.txt")
+        try:
+            os.symlink(real, link)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("symlinks not supported on this platform/account")
+        findings, errors = scanner.scan(self.dir)
+        content_paths = [f["path"] for f in findings if f["mode"] == "CONTENT"]
+        self.assertIn(real, content_paths)
+        self.assertNotIn(link, content_paths)
+        # Skipping the symlink is deliberate, not a read error.
+        self.assertEqual(errors, [])
+
 
 class SafetyTests(unittest.TestCase):
     """Untrusted text (filenames, secret values) must be neutralised before display."""
@@ -94,6 +124,22 @@ class SafetyTests(unittest.TestCase):
         evil = "secret\x1b[2Jvalue"
         self.assertNotIn("\x1b", scanner._sanitize(evil))
         self.assertIn("\\x1b", scanner._sanitize(evil))
+
+    def test_bidi_override_is_escaped(self):
+        # Trojan-Source: a right-to-left override can visually reorder output.
+        evil = "safe" + chr(0x202e) + "evil"
+        out = scanner._sanitize(evil)
+        self.assertNotIn(chr(0x202e), out)
+        self.assertIn("\\u202e", out)
+
+    def test_zero_width_character_is_escaped(self):
+        # Zero-width chars can hide text; they must be made visible.
+        out = scanner._sanitize("ab" + chr(0x200b) + "cd")
+        self.assertNotIn(chr(0x200b), out)
+        self.assertIn("\\u200b", out)
+
+    def test_plain_text_is_left_untouched(self):
+        self.assertEqual(scanner._sanitize("hello-world.env:42"), "hello-world.env:42")
 
     def test_short_value_is_fully_hidden(self):
         self.assertEqual(scanner.mask_secret("short"), "***")

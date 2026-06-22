@@ -18,11 +18,13 @@ Secrets accidentally committed to repos or left lying in config files are one of
 - **CI-friendly exit codes**: exits `1` when findings exist *or* when any file could not be read, `0` only when the scan was clean and complete, so unreadable files never masquerade as "clean".
 - **Directory pruning**: automatically skips `.git`, `node_modules`, `__pycache__`, `venv`, `.venv`, `dist`, `build`, and other noisy directories so scans stay fast.
 - **File-size guard**: files larger than 5 MB are skipped with a `[SKIP]` notice, preventing hangs on large binaries or data files.
+- **Long-line guard**: individual lines over 100 KB (minified bundles, crafted no-newline blobs) are skipped for content matching and reported with a `[SKIP]` notice, so regex work stays bounded and a skipped line never reads as "clean".
 - **Binary-aware**: files whose decoded contents contain NUL bytes are treated as binary and skipped for content scanning, cutting noise from images and compiled artifacts.
+- **Symlink & special-file safe**: only regular files are read. Symlinks are not followed (so a scan can't be lured outside the target directory) and special files like FIFOs, devices, and sockets are skipped (so a `read()` can't block the scan forever).
 - **Improved false-positive filtering**: placeholder and dummy values (`none`, `changeme`, `example`, `your_key`, `xxxx`, etc.) are filtered out by regex lookahead before a finding is raised.
 - **Severity scoring**: findings are tagged `HIGH` or `MEDIUM` and sorted with the most serious first.
 - **Colored output**: an ASCII banner and color-coded severities (HIGH red, MEDIUM yellow, LOW blue) when writing to a terminal. Color auto-disables when piped/redirected, and respects the `NO_COLOR` environment variable.
-- **Escape-injection safe**: untrusted text (file paths and masked values) is sanitized before printing, so a malicious filename or secret carrying ANSI/terminal control codes can't spoof, hide, or rewrite the scanner's output.
+- **Escape-injection safe**: untrusted text (file paths and masked values) is sanitized before printing, so a malicious filename or secret can't spoof, hide, or rewrite the scanner's output. This covers ANSI/terminal control codes *and* Unicode bidirectional and zero-width characters ("Trojan Source"-style attacks) that could otherwise visually reorder or conceal text.
 - **JSON output**: pass `--json` to emit structured JSON for piping into other tools or dashboards (no banner or color, so output stays machine-parseable).
 - **Encoding tolerant**: handles UTF-8 (with or without BOM), UTF-16, and UTF-32 files, including BOM-less UTF-16 written by PowerShell (detected heuristically), so secrets aren't missed due to encoding quirks.
 - **Zero dependencies**: uses only Python standard library (argparse, json, os, re, sys; `ctypes` only on Windows to enable terminal colors).
@@ -136,16 +138,6 @@ python -m unittest test_secret_scanner -v
 - **False positives:** regex matching will flag any line resembling a secret (e.g. `password=` or `password:` in documentation or example code). Placeholder filtering reduces noise, but treat findings as leads to verify, not confirmed secrets.
 - **Pattern coverage:** detects common secret formats; it is not exhaustive.
 - **BOM-less UTF-16 is heuristic:** detection relies on NUL-byte density, so unusual files may still decode imperfectly.
-
-## Ideas for later
-
-A few things I'd add if I keep building on this:
-
-- Expanded pattern set (GitHub `ghp_`, Slack `xox...`, Google `AIza...`, Stripe, JWTs)
-- Entropy-based detection to catch high-randomness strings the regexes miss
-- A baseline/allowlist file so CI fails only on *new* secrets
-- Flags for everyday use: `--severity`, `--exclude`, `--quiet`, scanning a single file
-- SARIF output for GitHub code-scanning
 
 ## License
 
